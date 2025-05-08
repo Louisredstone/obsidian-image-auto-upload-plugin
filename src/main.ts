@@ -83,6 +83,7 @@ export default class imageAutoUploadPlugin extends Plugin {
     });
     this.setupPasteHandler();
     this.registerFileMenu();
+    this.registerFilesMenu();
     this.registerSelection();
   }
 
@@ -183,13 +184,13 @@ export default class imageAutoUploadPlugin extends Plugin {
 
           menu.addItem((item: MenuItem) => {
             item
-              .setTitle(t("upload"))
+              .setTitle(t("Upload Image File"))
               .setIcon("upload")
               .onClick(() => {
                 if (!(file instanceof TFile)) {
                   return false;
                 }
-                this.fileMenuUpload(file);
+                this.uploadTFiles([file]);
               });
           });
         }
@@ -197,42 +198,90 @@ export default class imageAutoUploadPlugin extends Plugin {
     );
   }
 
-  fileMenuUpload(file: TFile) {
-    let imageList: Image[] = [];
-    const fileArray = this.helper.getAllFiles();
+  registerFilesMenu(){
+    this.registerEvent(
+      this.app.workspace.on(
+        "files-menu",
+        (menu: Menu, files: TFile[], source: string, leaf) => {
+          if (source === "canvas-menu") return false;
+          // if (!isAssetTypeAnImage(file.path)) return false;
+          // TODO: judge if files are image files
 
-    for (const match of fileArray) {
-      const imageName = match.name;
-      const encodedUri = match.path;
-
-      const fileName = basename(decodeURI(encodedUri));
-
-      if (file && file.name === fileName) {
-        if (isAssetTypeAnImage(file.path)) {
-          imageList.push({
-            path: file.path,
-            name: imageName,
-            source: match.source,
-            file: file,
+          menu.addItem((item: MenuItem) => {
+            item
+              .setTitle(t("Upload Image Files"))
+              .setIcon("upload")
+              .onClick(() => {
+                var imageFiles = files.filter(file => ((file instanceof TFile) && isAssetTypeAnImage(file.path)));
+                if (files.length !== imageFiles.length){
+                  console.log(`Omitting ${files.length - imageFiles.length} non-image files`);
+                }
+                this.uploadTFiles(imageFiles);
+              });
           });
         }
-      }
+      )
+    );
+  }
+
+  uploadTFiles(files: TFile[]){
+    // DEBUGGING STAGE
+
+    console.log('selected files:'); 
+    console.log(files);
+    
+    // 1. find all relevant links in vault
+
+    var referedBy = {};
+    for (const file of files) {
+      const linkedFiles = this.app.metadataCache.resolvedLinks.map()
     }
 
-    if (imageList.length === 0) {
-      new Notice(t("Can not find image file"));
-      return;
-    }
+    // 1.1 markdown link: ![](file)
+    // 1.2 obsidian link: [[file]]
+    // 2. upload all image files, generate oldFile-newLink map
+    // 3. replace all old links with new links
+    // 4. delete old files if necessary
 
-    this.upload(imageList).then(res => {
-      if (!res.success) {
-        new Notice("Upload error");
-        return;
-      }
 
-      let uploadUrlList = res.result;
-      this.replaceImage(imageList, uploadUrlList);
-    });
+
+
+    // let imageList: Image[] = [];
+    // const fileArray = this.helper.getAllFiles();
+
+    // for (const match of fileArray) {
+    //   const imageName = match.name;
+    //   const encodedUri = match.path;
+
+    //   const fileName = basename(decodeURI(encodedUri));
+
+    //   if (file && file.name === fileName) {
+    //     if (isAssetTypeAnImage(file.path)) {
+    //       imageList.push({
+    //         path: file.path,
+    //         name: imageName,
+    //         // source: match.source, // <- Original code. I don't know what this is for.
+    //         source: file.path, // Could be problematic. I can't find where 'source' is used in this.upload(), so I'm just setting it to a default value.
+    //         file: file,
+    //       });
+    //     }
+    //   }
+    // }
+
+    // if (imageList.length === 0) {
+    //   new Notice(t("Can not find image file"));
+    //   return;
+    // }
+
+    // this.upload(imageList).then(res => {
+    //   if (!res.success) {
+    //     new Notice("Upload error");
+    //     return;
+    //   }
+
+    //   let uploadUrlList = res.result;
+    //   this.replaceImage(imageList, uploadUrlList);
+    // });
   }
 
   filterFile(fileArray: Image[]) {
