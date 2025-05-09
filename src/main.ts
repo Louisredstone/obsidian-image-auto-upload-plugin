@@ -186,11 +186,11 @@ export default class imageAutoUploadPlugin extends Plugin {
             item
               .setTitle(t("Upload Image File"))
               .setIcon("upload")
-              .onClick(() => {
+              .onClick(async () => {
                 if (!(file instanceof TFile)) {
                   return false;
                 }
-                this.uploadTFiles([file]);
+                await this.uploadImageTFiles([file]);
               });
           });
         }
@@ -211,12 +211,12 @@ export default class imageAutoUploadPlugin extends Plugin {
             item
               .setTitle(t("Upload Image Files"))
               .setIcon("upload")
-              .onClick(() => {
+              .onClick(async () => {
                 var imageFiles = files.filter(file => ((file instanceof TFile) && isAssetTypeAnImage(file.path)));
                 if (files.length !== imageFiles.length){
                   console.log(`Omitting ${files.length - imageFiles.length} non-image files`);
                 }
-                this.uploadTFiles(imageFiles);
+                await this.uploadImageTFiles(imageFiles);
               });
           });
         }
@@ -224,18 +224,83 @@ export default class imageAutoUploadPlugin extends Plugin {
     );
   }
 
-  uploadTFiles(files: TFile[]){
+  async uploadImageTFiles(imageFiles: TFile[]){
     // DEBUGGING STAGE
 
-    console.log('selected files:'); 
-    console.log(files);
+    console.log('selected files:'); // DEBUG
+    console.log(imageFiles); // DEBUG
     
-    // 1. find all relevant links in vault
+    imageFiles = imageFiles.filter(file => isAssetTypeAnImage(file.path));
 
-    var referedBy = {};
-    for (const file of files) {
-      const linkedFiles = this.app.metadataCache.resolvedLinks.map()
+    // 1. find all relevant links in vault
+    // 1.1 prepare all resolved links in vault.
+    // this.app.metadataCache.resolvedLinks: Record<string, Record<string, number>>, meaning: {sourceFilePath: {targetFilePath: nLinks}}
+    // reversedLinks: Record<string, Record<string, number>>, meaning: {targetFilePath: {sourceFilePath: nLinks}}
+    // reversedLinksOfImageFiles: Record<string, Record<string, number>>, meaning: {imageFilePath: {sourceFilePath: nLinks}}
+    const reversedLinksOfImageFiles: Record<string, Record<string, number>> = {};
+    for (const imageFile of imageFiles){
+      reversedLinksOfImageFiles[imageFile.path] = {};
     }
+    for (const [sourceFilePath, links] of Object.entries(this.app.metadataCache.resolvedLinks)) {
+      for (const [targetFilePath, nLinks] of Object.entries(links)) {
+        if (!reversedLinksOfImageFiles[targetFilePath]) { // ignore not selected files
+          continue;
+        }
+        if (!reversedLinksOfImageFiles[targetFilePath][sourceFilePath])
+          reversedLinksOfImageFiles[targetFilePath][sourceFilePath] = nLinks;
+        else 
+          reversedLinksOfImageFiles[targetFilePath][sourceFilePath] += nLinks;
+      }
+    }
+    // 1.2 find all relevant image links in all files
+    const imageLinksInSrcFiles: Record<string, {targetFilePath: string, displayName: string, start: number, end: number}> = {};
+    // start and end here are offsets in src file content.
+    for (const imageFile of imageFiles) {
+      for(const srcFilePath in reversedLinksOfImageFiles[imageFile.path]){
+        const srcFile = this.app.vault.getAbstractFileByPath(srcFilePath);
+        if (!(srcFile instanceof TFile)) continue;
+        const srcFileContent = await this.app.vault.read(srcFile);
+        const srcFileMetaDataCache = this.app.metadataCache.getFileCache(srcFile);
+        if (!srcFileMetaDataCache || !srcFileMetaDataCache.sections) continue;
+        const sections = srcFileMetaDataCache.sections;
+        const allowedCodeType = ["ad-quote"]; // TODO: add an option in settings to define this list.
+        const REGEX_MD_LINK = /\!\[(.*?)\]\(<(\S+\.\w+)>\)|\!\[(.*?)\]\((\S+\.\w+)(?:\s+"[^"]*")?\)|\!\[(.*?)\]\((https?:\/\/.*?)\)/g;
+        const REGEX_WIKI_LINK = /\!\[\[(.*?)(\s*?\|.*?)?\]\]/g;
+        for (const section of sections) {
+          const sectionContent = srcFileContent.substring(section.position.start.offset, section.position.end.offset);
+          if (section.type == "code") {
+            var codeBlockAllowed = false;
+            for (const codeType of allowedCodeType) {
+              if (sectionContent.startsWith('\`\`\`'+codeType)) {
+                codeBlockAllowed = true;
+                break;
+              }
+            }
+            if (!codeBlockAllowed) continue;
+          }
+          const mdMatches = sectionContent.matchAll(REGEX_MD_LINK);
+          const wikiMatches = sectionContent.matchAll(REGEX_WIKI_LINK);
+          for (const match of mdMatches) {
+            if (match.index === undefined) continue;
+            var name = match[1] || match[3];
+            var link = match[2] || match[4];
+            const start = section.position.start.offset + match.index;
+            const end = start + match.length;
+          }
+          for (const match of wikiMatches){
+            if (match.index === undefined) continue;
+            var link = match[1];
+          }
+        }
+        // const imageLinks = this.helper.getImageLink(srcFileContent); // TODO: write my own.
+        
+        
+      }
+    } 
+
+    // MEMO: some codes might help:
+    // const imageCaches = imageFiles.map((imageFile: TFile) => this.app.metadataCache.getFileCache(imageFile));
+
 
     // 1.1 markdown link: ![](file)
     // 1.2 obsidian link: [[file]]
@@ -245,43 +310,6 @@ export default class imageAutoUploadPlugin extends Plugin {
 
 
 
-
-    // let imageList: Image[] = [];
-    // const fileArray = this.helper.getAllFiles();
-
-    // for (const match of fileArray) {
-    //   const imageName = match.name;
-    //   const encodedUri = match.path;
-
-    //   const fileName = basename(decodeURI(encodedUri));
-
-    //   if (file && file.name === fileName) {
-    //     if (isAssetTypeAnImage(file.path)) {
-    //       imageList.push({
-    //         path: file.path,
-    //         name: imageName,
-    //         // source: match.source, // <- Original code. I don't know what this is for.
-    //         source: file.path, // Could be problematic. I can't find where 'source' is used in this.upload(), so I'm just setting it to a default value.
-    //         file: file,
-    //       });
-    //     }
-    //   }
-    // }
-
-    // if (imageList.length === 0) {
-    //   new Notice(t("Can not find image file"));
-    //   return;
-    // }
-
-    // this.upload(imageList).then(res => {
-    //   if (!res.success) {
-    //     new Notice("Upload error");
-    //     return;
-    //   }
-
-    //   let uploadUrlList = res.result;
-    //   this.replaceImage(imageList, uploadUrlList);
-    // });
   }
 
   filterFile(fileArray: Image[]) {
@@ -318,7 +346,7 @@ export default class imageAutoUploadPlugin extends Plugin {
   /**
    * 替换上传的图片
    */
-  replaceImage(imageList: Image[], uploadUrlList: string[]) {
+  replaceImage(imageList: Image[], uploadUrlList: string[]) { // replaceImageUrlsInActiveFile
     let content = this.helper.getValue();
 
     imageList.map(item => {
@@ -342,7 +370,7 @@ export default class imageAutoUploadPlugin extends Plugin {
   /**
    * 上传所有图片
    */
-  uploadAllFile() {
+  uploadAllFile() { // uploadAllImageFilesInActiveFile
     const activeFile = this.app.workspace.getActiveFile();
     const fileMap = arrayToObject(this.app.vault.getFiles(), "name");
     const filePathMap = arrayToObject(this.app.vault.getFiles(), "path");
