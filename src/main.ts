@@ -9,7 +9,10 @@ import {
   Notice,
   addIcon,
   MarkdownFileInfo,
+  parseLinktext,
+  getLinkpath,
 } from "obsidian";
+import * as pathlib from "path";
 import { resolve, basename, dirname } from "path-browserify";
 
 import { isAssetTypeAnImage, arrayToObject } from "./utils";
@@ -181,21 +184,70 @@ export default class imageAutoUploadPlugin extends Plugin {
         (menu: Menu, file: TFile, source: string, leaf) => {
           if (source === "canvas-menu") return false;
           if (!isAssetTypeAnImage(file.path)) return false;
-
-          menu.addItem((item: MenuItem) => {
-            item
-              .setTitle(t("Upload Image File"))
-              .setIcon("upload")
-              .onClick(async () => {
-                if (!(file instanceof TFile)) {
-                  return false;
-                }
-                await this.uploadImageTFiles([file]);
-              });
-          });
+          if (source === "file-explorer-context-menu"){
+            menu.addItem((item: MenuItem) => {
+              item
+                .setTitle(t("Upload Image File"))
+                .setIcon("upload")
+                .onClick(async () => {
+                  await this.uploadImageTFiles([file]);
+                });
+            });
+          }
+          else {
+            menu.addItem((item: MenuItem) => {
+              item
+                .setTitle(t("upload"))
+                .setIcon("upload")
+                .onClick(() => {
+                  if (!(file instanceof TFile)) {
+                    return false;
+                  }
+                  this.fileMenuUpload(file);
+                });
+            });
+          }
         }
       )
     );
+  }
+
+  fileMenuUpload(file: TFile) {
+    let imageList: Image[] = [];
+    const fileArray = this.helper.getAllFiles();
+
+    for (const match of fileArray) {
+      const imageName = match.name;
+      const encodedUri = match.path;
+
+      const fileName = basename(decodeURI(encodedUri));
+
+      if (file && file.name === fileName) {
+        if (isAssetTypeAnImage(file.path)) {
+          imageList.push({
+            path: file.path,
+            name: imageName,
+            source: match.source,
+            file: file,
+          });
+        }
+      }
+    }
+
+    if (imageList.length === 0) {
+      new Notice(t("Can not find image file"));
+      return;
+    }
+
+    this.upload(imageList).then(res => {
+      if (!res.success) {
+        new Notice("Upload error");
+        return;
+      }
+
+      let uploadUrlList = res.result;
+      this.replaceImage(imageList, uploadUrlList);
+    });
   }
 
   registerFilesMenu(){
@@ -203,10 +255,7 @@ export default class imageAutoUploadPlugin extends Plugin {
       this.app.workspace.on(
         "files-menu",
         (menu: Menu, files: TFile[], source: string, leaf) => {
-          if (source === "canvas-menu") return false;
-          // if (!isAssetTypeAnImage(file.path)) return false;
-          // TODO: judge if files are image files
-
+          if (source !== "file-explorer-context-menu") return false;
           menu.addItem((item: MenuItem) => {
             item
               .setTitle(t("Upload Image Files"))
@@ -225,14 +274,10 @@ export default class imageAutoUploadPlugin extends Plugin {
   }
 
   async uploadImageTFiles(imageFiles: TFile[]){
-    // DEBUGGING STAGE
-
-    console.log('selected files:'); // DEBUG
-    console.log(imageFiles); // DEBUG
-    
     imageFiles = imageFiles.filter(file => isAssetTypeAnImage(file.path));
 
-    // 1. find all relevant links in vault
+    // 1. find all relevant links in vault.
+    // Let's say, in source file (usually markdown), there is a link `![displayName](targetFilePath)` or `[[targetFileWikilink|displayName]]`.
     // 1.1 prepare all resolved links in vault.
     // this.app.metadataCache.resolvedLinks: Record<string, Record<string, number>>, meaning: {sourceFilePath: {targetFilePath: nLinks}}
     // reversedLinks: Record<string, Record<string, number>>, meaning: {targetFilePath: {sourceFilePath: nLinks}}
@@ -253,19 +298,19 @@ export default class imageAutoUploadPlugin extends Plugin {
       }
     }
     // 1.2 find all relevant image links in all files
-    const imageLinksInSrcFiles: Record<string, {targetFilePath: string, displayName: string, start: number, end: number}> = {};
+    const imageLinksInSrcFiles: Record<string, {targetFilePath: string, displayName: string, start: number, end: number}[]> = {};
     // start and end here are offsets in src file content.
     for (const imageFile of imageFiles) {
-      for(const srcFilePath in reversedLinksOfImageFiles[imageFile.path]){
-        const srcFile = this.app.vault.getAbstractFileByPath(srcFilePath);
-        if (!(srcFile instanceof TFile)) continue;
-        const srcFileContent = await this.app.vault.read(srcFile);
-        const srcFileMetaDataCache = this.app.metadataCache.getFileCache(srcFile);
+      for(const sourceFilePath in reversedLinksOfImageFiles[imageFile.path]){
+        const sourceFile = this.app.vault.getAbstractFileByPath(sourceFilePath);
+        if (!(sourceFile instanceof TFile)) continue;
+        const srcFileContent = await this.app.vault.read(sourceFile);
+        const srcFileMetaDataCache = this.app.metadataCache.getFileCache(sourceFile);
         if (!srcFileMetaDataCache || !srcFileMetaDataCache.sections) continue;
         const sections = srcFileMetaDataCache.sections;
         const allowedCodeType = ["ad-quote"]; // TODO: add an option in settings to define this list.
-        const REGEX_MD_LINK = /\!\[(.*?)\]\(<(\S+\.\w+)>\)|\!\[(.*?)\]\((\S+\.\w+)(?:\s+"[^"]*")?\)|\!\[(.*?)\]\((https?:\/\/.*?)\)/g;
-        const REGEX_WIKI_LINK = /\!\[\[(.*?)(\s*?\|.*?)?\]\]/g;
+        const REGEX_MD_LINK = /\!\[(.*?)\]\(<(\S+\.\w+)>\)|\!\[(.*?)\]\((\S+\.\w+)(?:(\s+"[^"]*"|\s*\|.*)*)?\)|\!\[(.*?)\]\((https?:\/\/.*?)\)/g;
+        const REGEX_WIKI_LINK = /\!\[\[(.*?)(\s*\|.*)?\]\]/g;
         for (const section of sections) {
           const sectionContent = srcFileContent.substring(section.position.start.offset, section.position.end.offset);
           if (section.type == "code") {
@@ -280,36 +325,112 @@ export default class imageAutoUploadPlugin extends Plugin {
           }
           const mdMatches = sectionContent.matchAll(REGEX_MD_LINK);
           const wikiMatches = sectionContent.matchAll(REGEX_WIKI_LINK);
-          for (const match of mdMatches) {
-            if (match.index === undefined) continue;
-            var name = match[1] || match[3];
-            var link = match[2] || match[4];
-            const start = section.position.start.offset + match.index;
-            const end = start + match.length;
+          const imageLinksInSrcFile = imageLinksInSrcFiles[sourceFilePath] || [];
+          mdMatches.forEach(match => {
+            if (match.index === undefined) return;
+            console.log("processing md match:");
+            console.log(match);
+            const displayName = match[1] || match[3] || match[5]; 
+            if (match[6]) return; // ignore network image
+            const encodedURI = match[2] || match[4];
+            const decodedURI = decodeURI(encodedURI); // Actually, I'm not sure if this can handle all cases.
+            if (pathlib.isAbsolute(decodedURI)) return;
+            // decodedURI should be a relative path. Ignore absolute path.
+            const targetFilePath = pathlib.normalize(pathlib.join(pathlib.dirname(sourceFilePath), decodedURI));
+            if (targetFilePath === imageFile.path) {
+              const start = section.position.start.offset + match.index;
+              const end = start + match[0].length;
+              imageLinksInSrcFile[imageLinksInSrcFile.length] = {
+                targetFilePath: targetFilePath,
+                displayName: displayName || "image",
+                start: start,
+                end: end,
+              };
+            }
+          });
+          wikiMatches.forEach(match => {
+            if (match.index === undefined) return;
+            console.log("processing wiki match:");
+            console.log(match);
+            const linktext = match[1];
+            const residual = match[2];
+            const {path, subpath} = parseLinktext(linktext);
+            const firstDest = this.app.metadataCache.getFirstLinkpathDest(path, sourceFilePath);
+            if (!firstDest) return;
+            const targetFilePath = firstDest.path;
+            if (targetFilePath === imageFile.path) {
+              const start = section.position.start.offset + match.index;
+              const end = start + match[0].length;
+              imageLinksInSrcFile[imageLinksInSrcFile.length] = {
+                targetFilePath: targetFilePath,
+                displayName: linktext + (residual || ""),
+                start: start,
+                end: end,
+              };
+            }
+          });
+          // Must sort by start position to avoid overlap.
+          imageLinksInSrcFile.sort((a, b) => a.start - b.start);
+          for (var i = 0; i < imageLinksInSrcFile.length-1; i++){
+            if (imageLinksInSrcFile[i].end > imageLinksInSrcFile[i+1].start) {
+              new Notice(`Warning: image link overlap detected in ${sourceFilePath}. Task aborted.`);
+              return;
+            }
           }
-          for (const match of wikiMatches){
-            if (match.index === undefined) continue;
-            var link = match[1];
-          }
+          imageLinksInSrcFiles[sourceFilePath] = imageLinksInSrcFile;
         }
-        // const imageLinks = this.helper.getImageLink(srcFileContent); // TODO: write my own.
-        
-        
       }
     } 
+    // now imageLinksInSrcFiles contains all relevant image links in all files.
 
-    // MEMO: some codes might help:
-    // const imageCaches = imageFiles.map((imageFile: TFile) => this.app.metadataCache.getFileCache(imageFile));
-
-
-    // 1.1 markdown link: ![](file)
-    // 1.2 obsidian link: [[file]]
     // 2. upload all image files, generate oldFile-newLink map
-    // 3. replace all old links with new links
-    // 4. delete old files if necessary
+    const imageList: Image[] = imageFiles.map(file => {return {path: file.path, name: file.name, source: `![${file.name}](${file.path})`, file: file};});
+    this.upload(imageList).then(async res => {
+      if (!res.success) {
+        new Notice("Upload error");
+        return;
+      }
 
-
-
+      let uploadUrlList = res.result;
+      // 3. replace all old links with new links
+      // 3.1 prepare link map
+      if (imageFiles.length !== uploadUrlList.length){
+        new Notice(t("Warning: upload files is different of reciver files from api"));
+        return;
+      }
+      const linkMap: Record<string, string> = {};
+      for (let i = 0; i < imageFiles.length; i++) {
+        const imageFile = imageFiles[i];
+        const uploadUrl = uploadUrlList[i];
+        linkMap[imageFile.path] = uploadUrl;
+      }
+      // 3.2 replace all links and apply to files
+      for (const sourceFilePath in imageLinksInSrcFiles) {
+        const imageLinks = imageLinksInSrcFiles[sourceFilePath];
+        const sourceFile = this.app.vault.getAbstractFileByPath(sourceFilePath);
+        if (!(sourceFile instanceof TFile)) continue;
+        const srcFileContent = await this.app.vault.read(sourceFile);
+        var newFileContent = "";
+        var ptr=0;
+        for (const imageLink of imageLinks) {
+          const {targetFilePath, displayName, start, end} = imageLink;
+          const uploadUrl = linkMap[targetFilePath];
+          if (!uploadUrl) {
+            continue;
+          } else {
+            newFileContent += srcFileContent.substring(ptr, start); // copy before image link
+            newFileContent += `![${displayName}](${uploadUrl})`;
+            ptr = end;
+          }
+        }
+        newFileContent += srcFileContent.substring(ptr); // copy after last image link
+        await this.app.vault.modify(sourceFile, newFileContent);
+      }
+      // 4. delete old files if necessary
+      if (this.settings.deleteSource){
+        imageFiles.map(imageFile => this.app.fileManager.trashFile(imageFile));
+      }
+    });
   }
 
   filterFile(fileArray: Image[]) {

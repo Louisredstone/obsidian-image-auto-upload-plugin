@@ -49,5 +49,5 @@ export default {
     "警告：上传的文件与接口返回的文件数量不一致",
   upload: "上传",
   "Upload Image File": "上传图片文件",
-  "Upload Image Files": "上传图片文件",
+  "Upload Image Files": "上传多个图片文件",
 };
