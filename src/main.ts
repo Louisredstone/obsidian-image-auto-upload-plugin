@@ -275,6 +275,12 @@ export default class imageAutoUploadPlugin extends Plugin {
 
   async uploadImageTFiles(imageFiles: TFile[]){
     imageFiles = imageFiles.filter(file => isAssetTypeAnImage(file.path));
+    var historyMessage = `Uploading ${imageFiles.length} image file(s)...`;
+    const progressNotice = new Notice(historyMessage, 0);
+    var progressMessage = "";
+    var total: number = 0;
+    var count: number = 0;
+    
 
     // 1. find all relevant links in vault.
     // Let's say, in source file (usually markdown), there is a link `![displayName](targetFilePath)` or `[[targetFileWikilink|displayName]]`.
@@ -286,7 +292,12 @@ export default class imageAutoUploadPlugin extends Plugin {
     for (const imageFile of imageFiles){
       reversedLinksOfImageFiles[imageFile.path] = {};
     }
+    Object.keys(this.app.metadataCache.resolvedLinks).forEach((key) => {total += 1});
+    count = 0; 
     for (const [sourceFilePath, links] of Object.entries(this.app.metadataCache.resolvedLinks)) {
+      count += 1;
+      progressMessage = `Resolving links in vault (${count}/${total})...`;
+      progressNotice.setMessage(historyMessage + "\n" + progressMessage);
       for (const [targetFilePath, nLinks] of Object.entries(links)) {
         if (!reversedLinksOfImageFiles[targetFilePath]) { // ignore not selected files
           continue;
@@ -297,10 +308,18 @@ export default class imageAutoUploadPlugin extends Plugin {
           reversedLinksOfImageFiles[targetFilePath][sourceFilePath] += nLinks;
       }
     }
+    historyMessage += `\nResolving links in vault (${count}/${total})... Done`;
+    progressNotice.setMessage(historyMessage);
+    
     // 1.2 find all relevant image links in all files
     const imageLinksInSrcFiles: Record<string, {targetFilePath: string, displayName: string, start: number, end: number}[]> = {};
     // start and end here are offsets in src file content.
+    total = imageFiles.length;
+    count = 0;
     for (const imageFile of imageFiles) {
+      count += 1;
+      progressMessage = `Finding relevant notes for ${imageFile.name} (${count}/${total})...`;
+      progressNotice.setMessage(historyMessage+ "\n" + progressMessage);
       for(const sourceFilePath in reversedLinksOfImageFiles[imageFile.path]){
         const sourceFile = this.app.vault.getAbstractFileByPath(sourceFilePath);
         if (!(sourceFile instanceof TFile)) continue;
@@ -328,8 +347,6 @@ export default class imageAutoUploadPlugin extends Plugin {
           const imageLinksInSrcFile = imageLinksInSrcFiles[sourceFilePath] || [];
           mdMatches.forEach(match => {
             if (match.index === undefined) return;
-            console.log("processing md match:");
-            console.log(match);
             const displayName = match[1] || match[3] || match[5]; 
             if (match[6]) return; // ignore network image
             const encodedURI = match[2] || match[4];
@@ -350,8 +367,6 @@ export default class imageAutoUploadPlugin extends Plugin {
           });
           wikiMatches.forEach(match => {
             if (match.index === undefined) return;
-            console.log("processing wiki match:");
-            console.log(match);
             const linktext = match[1];
             const residual = match[2];
             const {path, subpath} = parseLinktext(linktext);
@@ -381,10 +396,13 @@ export default class imageAutoUploadPlugin extends Plugin {
         }
       }
     } 
+    historyMessage += `\nFinding relevant notes for ${imageFiles.length} image file(s)... Done`;
     // now imageLinksInSrcFiles contains all relevant image links in all files.
 
     // 2. upload all image files, generate oldFile-newLink map
     const imageList: Image[] = imageFiles.map(file => {return {path: file.path, name: file.name, source: `![${file.name}](${file.path})`, file: file};});
+    progressMessage = `Uploading ${imageList.length} image file(s), it may take a while...`;
+    progressNotice.setMessage(historyMessage + "\n" + progressMessage);
     this.upload(imageList).then(async res => {
       if (!res.success) {
         new Notice("Upload error");
@@ -392,10 +410,12 @@ export default class imageAutoUploadPlugin extends Plugin {
       }
 
       let uploadUrlList = res.result;
+      historyMessage += `\nUploading ${imageList.length} image file(s), it may take a while... Done`;
+      progressNotice.setMessage(historyMessage);
       // 3. replace all old links with new links
       // 3.1 prepare link map
       if (imageFiles.length !== uploadUrlList.length){
-        new Notice(t("Warning: upload files is different of reciver files from api"));
+        new Notice("Error: upload files is different of reciver files from api. Aborted.");
         return;
       }
       const linkMap: Record<string, string> = {};
@@ -405,7 +425,12 @@ export default class imageAutoUploadPlugin extends Plugin {
         linkMap[imageFile.path] = uploadUrl;
       }
       // 3.2 replace all links and apply to files
+      total = Object.keys(imageLinksInSrcFiles).length;
+      count = 0;
       for (const sourceFilePath in imageLinksInSrcFiles) {
+        count += 1;
+        progressMessage = `Replacing links in ${sourceFilePath} (${count}/${total})...`;
+        progressNotice.setMessage(historyMessage + "\n" + progressMessage);
         const imageLinks = imageLinksInSrcFiles[sourceFilePath];
         const sourceFile = this.app.vault.getAbstractFileByPath(sourceFilePath);
         if (!(sourceFile instanceof TFile)) continue;
@@ -426,10 +451,19 @@ export default class imageAutoUploadPlugin extends Plugin {
         newFileContent += srcFileContent.substring(ptr); // copy after last image link
         await this.app.vault.modify(sourceFile, newFileContent);
       }
+      historyMessage += `\nReplacing links in ${Object.keys(imageLinksInSrcFiles).length} file(s)... Done`;
+      progressNotice.setMessage(historyMessage);
       // 4. delete old files if necessary
       if (this.settings.deleteSource){
+        progressMessage += `Deleting ${imageFiles.length} local image file(s), this may take a while...`;
+        progressNotice.setMessage(historyMessage+"\n"+progressMessage);
         imageFiles.map(imageFile => this.app.fileManager.trashFile(imageFile));
+        historyMessage += `\nDeleting ${imageFiles.length} local image file(s), this may take a while... Done`;
+        progressNotice.setMessage(historyMessage);
       }
+      sleep(5000).then(() => {
+        progressNotice.hide();
+      });
     });
   }
 
