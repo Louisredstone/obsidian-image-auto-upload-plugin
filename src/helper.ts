@@ -36,7 +36,6 @@ export default class Helper {
 
   getEditor() {
     const mdView = this.app.workspace.getActiveViewOfType(MarkdownView);
-    console.log('mdView: '+mdView); // DEBUG
     if (mdView) {
       return mdView.editor;
     } else {
